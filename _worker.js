@@ -88,7 +88,7 @@ export default {
 			}
 
 			
-		} else if (url.pathname == "/"){//首页改成一个nginx伪装页
+		} else {// 首页或者授权token不符 改成一个nginx伪装页
 			return new Response(`
 			<!DOCTYPE html>
 			<html>
@@ -119,11 +119,6 @@ export default {
 			  headers: {
 				'Content-Type': 'text/html; charset=UTF-8',
 			  },
-			});
-		} else {// 如果 token 不符，返回 'token 有误'//
-			return new Response('token 有误', {
-				status: 400,
-				headers: { 'content-type': 'text/plain; charset=utf-8' },
 			});
 		}
 	}
