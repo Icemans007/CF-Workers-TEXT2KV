@@ -1,4 +1,4 @@
-let mytoken = 'passwd';
+let mytoken = '';
 
 export default {
     async fetch(request, env) {
@@ -10,25 +10,24 @@ export default {
             }
 
             const url = new URL(request.url);
-            const token = url.pathname === `/${mytoken}` ? mytoken : (url.searchParams.get('token') || "null");
+            const token = url.searchParams.get('token');
 
-            if (token !== mytoken) {
+            if (!mytoken || token !== mytoken) {
                 return createResponse('token 有误', 403);
             }
 
-            let fileName = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
-            fileName = fileName.toLowerCase(); // 将文件名转换为小写
-
-            switch (fileName) {
-                case "config":
-                case mytoken:
+            switch (url.pathname) {
+                case "/config":
+                case "/":
                     return createResponse(configHTML(url.hostname, token), 200, { 'Content-Type': 'text/html; charset=UTF-8' });
-                case "config/update.bat":
+                case "/config/update.bat":
                     return createResponse(generateBatScript(url.hostname, token), 200, { "Content-Disposition": 'attachment; filename=update.bat', "Content-Type": "text/plain; charset=utf-8" });
-                case "config/update.sh":
+                case "/config/update.sh":
                     return createResponse(generateShScript(url.hostname, token), 200, { "Content-Disposition": 'attachment; filename=update.sh', "Content-Type": "text/plain; charset=utf-8" });
                 default:
-                    return await handleFileOperation(env.KV, fileName, url, token);
+                    let fileName = url.pathname.substring(1).toLowerCase(); // 将文件名转换为小写
+                     
+                    return await handleFileOperation(env.KV, fileName, request, token);
             }
         } catch (error) {
             console.error("Error:", error);
@@ -41,15 +40,14 @@ export default {
  * 处理文件操作
  * @param {Object} KV - KV 命名空间实例
  * @param {String} fileName - 文件名
- * @param {Object} url - URL 实例
+ * @param {Object} request - request - The incoming request object
  * @param {String} token - 认证 token
  */
-async function handleFileOperation(KV, fileName, url, token) {
-    const text = url.searchParams.get('text') || null;
-    const b64 = url.searchParams.get('b64') || null;
-
-    // 如果没有传递 text 或 b64 参数，尝试从 KV 存储中获取文件内容
-    if (!text && !b64) {
+async function handleFileOperation(KV, fileName, request, token) {
+    
+    const contentType = request.headers.get("content-type");
+    // 如果没有传递数据过来，尝试从 KV 存储中获取文件内容
+    if (!contentType?.includes("form")) {
         const value = await KV.get(fileName, { cacheTtl: 60 });
         if (value === null) {
             return createResponse('File not found', 404);
@@ -57,8 +55,17 @@ async function handleFileOperation(KV, fileName, url, token) {
         return createResponse(value);
     }
 
+    const formData = await request.formData();
+    const body = {};
+    for (const entry of formData.entries()) {
+        body[entry[0]] = entry[1];
+    }
+
+    const b64 = body?.b64;
+    const text = body?.text;
+
     // 如果传递了 text 或 b64 参数，将内容写入 KV 存储
-    let content = text || base64Decode(replaceSpacesWithPlus(b64));
+    let content = text || base64Decode(replaceSpacesWithPlus(b64)) || "";
     await KV.put(fileName, content);
     const verifiedContent = await KV.get(fileName, { cacheTtl: 60 });
 
@@ -124,16 +131,32 @@ function generateBatScript(domain, token) {
         `set "DOMAIN=${domain}"`,
         `set "TOKEN=${token}"`,
         '',
+        'rem %~nx1表示第一个参数的文件名和扩展名',
         'set "FILENAME=%~nx1"',
         '',
-        'for /f "delims=" %%i in (\'powershell -command "$content = ((Get-Content -Path \'%cd%/%FILENAME%\' -Encoding UTF8) | Select-Object -First 65) -join [Environment]::NewLine; [convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($content))"\') do set "BASE64_TEXT=%%i"',
+        'rem PowerShell命令读取整个文件内容并转换为Base64',
+        'for /f "delims=" %%i in (\'powershell -command "$content = (Get-Content -Path \'%cd%/%FILENAME%\' -Encoding UTF8) -join [Environment]::NewLine; [convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($content))"\') do set "BASE64_TEXT=%%i"',
         '',
-        'set "URL=https://%DOMAIN%/%FILENAME%?token=%TOKEN%^&b64=%BASE64_TEXT%"',
+        'rem 构造GET请求URL (带有FILENAME和TOKEN参数)',
+        'set "URL=https://%DOMAIN%/%FILENAME%?token=%TOKEN%"',
         '',
-        'start %URL%',
-        'endlocal',
+        'rem 构造POST数据 (文件内容的Base64编码)',
+        'set "POST_DATA=b64=%BASE64_TEXT%"',
         '',
-        'echo 更新数据完成,倒数5秒后自动关闭窗口...',
+        'rem 使用curl发送POST请求，数据作为POST主体传递，并捕获错误输出',
+        'curl --fail -X POST "%URL%" ^',
+        '    -H "Content-Type: application/x-www-form-urlencoded" ^',
+        '    -d "%POST_DATA%" ^',
+        '',
+        'rem 检查curl的返回码，如果失败，打印错误信息并不自动关闭',
+        'if %errorlevel% neq 0 (',
+        '    echo 连接失败，请检查域名和TOKEN是否正确。',
+        '    pause',
+        '    exit /b',
+        ')',
+        '',
+        'rem 如果连接成功，显示成功消息并开始倒计时',
+        'echo 数据已成功发送到服务器, 倒数5秒后自动关闭窗口...',
         'timeout /t 5 >nul',
         'exit'
     ].join('\r\n');
@@ -146,18 +169,44 @@ function generateBatScript(domain, token) {
  */
 function generateShScript(domain, token) {
     return `#!/bin/bash
+
 export LANG=zh_CN.UTF-8
+# 设置域名和令牌
 DOMAIN="${domain}"
 TOKEN="${token}"
+
 if [ -n "$1" ]; then 
   FILENAME="$1"
 else
   echo "无文件名"
   exit 1
 fi
-BASE64_TEXT=$(head -n 65 $FILENAME | base64 -w 0)
-curl -k "https://${domain}/${FILENAME}?token=${token}&b64=${BASE64_TEXT}"
-echo "更新数据完成"
+
+# 读取整个文件内容并转换为 Base64 编码
+BASE64_TEXT=$(base64 -w 0 "$FILENAME")
+
+# 构造 POST 数据（文件内容的 Base64 编码）
+POST_DATA="b64=$BASE64_TEXT"
+
+# 构造 GET 请求的 URL，包含文件名和令牌参数
+URL="https://$DOMAIN/$FILENAME?token=$TOKEN"
+
+# 使用 curl 发送 POST 请求，数据作为 POST 主体传递，并捕获错误输出
+RESPONSE=$(curl --fail -X POST "$URL" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "$POST_DATA" 2>&1)
+
+# 检查 curl 的返回码，如果失败，打印错误信息并不自动关闭
+if [[ $? -ne 0 ]]; then
+    echo "连接失败，请检查域名和 TOKEN 是否正确。"
+    echo "错误信息：$RESPONSE"
+    exit 1
+fi
+
+# 如果连接成功，显示成功消息并开始倒计时
+echo "数据已成功发送到服务器，倒数 5 秒后自动关闭窗口..."
+sleep 5
+exit 0
 `;
 }
 
@@ -272,7 +321,7 @@ function configHTML(domain, token) {
             <strong>服务域名:</strong> ${domain}<br>
             <strong>TOKEN:</strong> ${token}<br>
         </p>
-        <p class="tips"><strong>注意!</strong> 因URL长度内容所限，脚本更新方式一次最多更新65行内容</p>
+        <p class="tips"><strong>注意!</strong> 请保管好自己的TOKEN，泄漏了域名和TOKEN他人可以直接获取你的数据。</p>
     <div class="flex-row">
     <h2>Windows 脚本:</h2>
     <button class="download-button" onclick="window.open('https://${domain}/config/update.bat?token=${token}&t=' + Date.now(), '_blank')">点击下载</button>
@@ -309,4 +358,3 @@ function configHTML(domain, token) {
 </html>
     `;
 }
-  
