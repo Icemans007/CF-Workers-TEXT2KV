@@ -27,7 +27,7 @@ export default {
                 default:
                     let fileName = url.pathname.substring(1).toLowerCase(); // 将文件名转换为小写
                      
-                    return await handleFileOperation(env.KV, fileName, request, token);
+                    return await handleFileOperation(env.KV, fileName, url, request, token);
             }
         } catch (error) {
             console.error("Error:", error);
@@ -43,11 +43,14 @@ export default {
  * @param {Object} request - request - The incoming request object
  * @param {String} token - 认证 token
  */
-async function handleFileOperation(KV, fileName, request, token) {
-    
+async function handleFileOperation(KV, fileName, url, request, token) {
+
+    const text = url.searchParams.get('text') ?? null;
+    const b64 = url.searchParams.get('b64') ?? null;
     const contentType = request.headers.get("content-type");
+
     // 如果没有传递数据过来，尝试从 KV 存储中获取文件内容
-    if (!contentType?.includes("form")) {
+    if (text === null && b64 === null && !contentType?.includes("form")) {
         const value = await KV.get(fileName, { cacheTtl: 60 });
         if (value === null) {
             return createResponse('File not found', 404);
@@ -55,17 +58,30 @@ async function handleFileOperation(KV, fileName, request, token) {
         return createResponse(value);
     }
 
-    const formData = await request.formData();
-    const body = {};
-    for (const entry of formData.entries()) {
-        body[entry[0]] = entry[1];
+    let content = "";
+
+    if (!contentType?.includes("form")) {
+        try {
+            // 从请求中获取表单数据
+            const formData = await request.formData();
+            const file = formData.get('file');
+
+            if (file) {
+                // 读取文件内容
+                const arrayBuffer = await file.arrayBuffer();
+                content = new TextDecoder().decode(arrayBuffer);
+            } else {
+                throw new Error('File not found in the request');
+            }
+        } catch (error) {
+            throw new Error(`Error processing the request: ${error.message}`);
+        }
+    }
+    // 如果传递了 text 或 b64 参数，将内容写入 KV 存储
+    else {
+        content = text ?? base64Decode(replaceSpacesWithPlus(b64));
     }
 
-    const b64 = body?.b64;
-    const text = body?.text;
-
-    // 如果传递了 text 或 b64 参数，将内容写入 KV 存储
-    let content = text || base64Decode(replaceSpacesWithPlus(b64)) || "";
     await KV.put(fileName, content);
     const verifiedContent = await KV.get(fileName, { cacheTtl: 60 });
 
