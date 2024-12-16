@@ -26,13 +26,12 @@ export default {
                     return createResponse(generateShScript(url.hostname, token), 200, { "Content-Disposition": 'attachment; filename=update.sh', "Content-Type": "text/plain; charset=utf-8" });
                 default:
                     let fileName = url.pathname.substring(1).toLowerCase(); // 将文件名转换为小写
-
+                     
                     return await handleFileOperation(env.KV, fileName, url, request, token);
             }
         } catch (error) {
             console.error("Error:", error);
-            return createResponse(`Error: ${error.message}\nStack: ${error.stack}`, 200);
-            return createResponse(`Error: ${error.message}`, 500);
+            return createResponse(`Error: ${error.message}`, 200);
         }
     }
 };
@@ -50,13 +49,10 @@ async function handleFileOperation(KV, fileName, url, request, token) {
     const b64 = url.searchParams.get('b64') ?? null;
     const contentType = request.headers.get("content-type");
 
-    let errorMsg = "Content type received: " + contentType + "\n";
-
     // 如果没有传递数据过来，尝试从 KV 存储中获取文件内容
     if (text === null && b64 === null && !contentType?.includes("form")) {
         const value = await KV.get(fileName, { cacheTtl: 60 });
         if (value === null) {
-            errorMsg += "File not found in KV: " + fileName + "\n";
             return createResponse('File not found', 404);
         }
         return createResponse(value);
@@ -72,17 +68,13 @@ async function handleFileOperation(KV, fileName, url, request, token) {
 
             if (file) {
                 // 读取文件内容
-                errorMsg += "File found in form data\n";
                 const arrayBuffer = await file.arrayBuffer();
-                content = new TextDecoder().decode(arrayBuffer);
-
-                errorMsg += "File content size: " + content.length + "\n";
+                content = new TextDecoder('utf-8').decode(arrayBuffer);
             } else {
                 throw new Error('File not found in the request');
             }
         } catch (error) {
-            errorMsg += `Error processing the request: ${error.message}\nStack: ${error.stack}\n`;
-            throw new Error(errorMsg);
+            throw new Error(`Error processing the request: ${error.message}`);
         }
     }
     // 如果传递了 text 或 b64 参数，将内容写入 KV 存储
@@ -90,16 +82,11 @@ async function handleFileOperation(KV, fileName, url, request, token) {
         content = text ?? base64Decode(replaceSpacesWithPlus(b64));
     }
 
-    try {
-        await KV.put(fileName, content);
-        const verifiedContent = await KV.get(fileName, { cacheTtl: 60 });
+    await KV.put(fileName, content);
+    const verifiedContent = await KV.get(fileName, { cacheTtl: 60 });
 
-        if (verifiedContent !== content) {
-            throw new Error('Content verification failed after write operation');
-        }
-    } catch (error) {
-        errorMsg += `Error storing content in KV: ${error.message}\nStack: ${error.stack}\n`
-        throw new Error(errorMsg);
+    if (verifiedContent !== content) {
+        throw new Error('Content verification failed after write operation');
     }
 
     return createResponse(verifiedContent);
