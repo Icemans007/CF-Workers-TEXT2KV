@@ -60,7 +60,7 @@ async function handleFileOperation(KV, fileName, url, request, token) {
 
     let content = "";
 
-    if (!contentType?.includes("form")) {
+    if (contentType?.includes("form")) {
         try {
             // 从请求中获取表单数据
             const formData = await request.formData();
