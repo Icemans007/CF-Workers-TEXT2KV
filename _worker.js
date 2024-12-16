@@ -31,7 +31,7 @@ export default {
             }
         } catch (error) {
             console.error("Error:", error);
-            return createResponse(`Error: ${error.message}\nStack: ${error.stack}`, 500);
+            return createResponse(`Error: ${error.message}\nStack: ${error.stack}`, 200);
             return createResponse(`Error: ${error.message}`, 500);
         }
     }
