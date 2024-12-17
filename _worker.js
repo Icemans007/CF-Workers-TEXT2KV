@@ -31,7 +31,7 @@ export default {
             }
         } catch (error) {
             console.error("Error:", error);
-            return createResponse(`Error: ${error.message}`, 200);
+            return createResponse(`Error: ${error.message}`, 500);
         }
     }
 };
@@ -139,46 +139,63 @@ function replaceSpacesWithPlus(str) {
  * @param {String} token - 认证 token
  */
 function generateBatScript(domain, token) {
-    return [
-        '@echo off',
-        'chcp 65001',
-        'setlocal',
-        '',
-        `set "DOMAIN=${domain}"`,
-        `set "TOKEN=${token}"`,
-        '',
-        'rem %~nx1表示第一个参数的文件名和扩展名',
-        'set "FILENAME=%~nx1"',
-        '',
-        'rem PowerShell命令读取整个文件内容并转换为Base64',
-        'for /f "delims=" %%i in (\'powershell -command "$content = (Get-Content -Path \'%cd%/%FILENAME%\' -Encoding UTF8) -join [Environment]::NewLine; [convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($content))"\') do set "BASE64_TEXT=%%i"',
-        '',
-        'rem 构造GET请求URL (带有FILENAME和TOKEN参数)',
-        'set "URL=https://%DOMAIN%/%FILENAME%?token=%TOKEN%"',
-        '',
-        'rem 构造POST数据 (文件内容的Base64编码)',
-        'set "POST_DATA=b64=%BASE64_TEXT%"',
-        '',
-        'rem 使用curl发送POST请求，数据作为POST主体传递，并捕获错误输出',
-        'curl --fail -X POST "%URL%" ^',
-        '    -H "Content-Type: application/x-www-form-urlencoded" ^',
-        '    -d "%POST_DATA%"',
-        '',
-        'rem 检查curl的返回码，如果失败，打印错误信息并不自动关闭',
-        'if %errorlevel% neq 0 (',
-        '    echo/',
-        '    echo 连接失败，请检查域名和TOKEN是否正确!',
-        '    pause',
-        '    exit /b',
-        ')',
-        '',
-        'rem 如果连接成功，显示成功消息并开始倒计时',
-        'echo/',
-        'echo/',
-        'echo 数据已成功发送到服务器, 倒数5秒后自动关闭窗口...',
-        'timeout /t 5 >nul',
-        'exit'
-    ].join('\r\n');
+    return `@echo off
+setlocal enabledelayedexpansion
+
+:: Set variables
+set DOMAIN=${domain}
+set TOKEN=${token}
+set FILEPATH=%~1
+set FILENAME=%~nx1
+
+:: Check if the file exists
+if not exist "%FILEPATH%" (
+    echo File "%FILEPATH%" does not exist.
+    pause
+    exit /b 1
+)
+
+:: Construct the request URL
+set URL=https://%DOMAIN%/%FILENAME%?token=%TOKEN%
+
+:: Upload the file and handle errors with detailed logging
+powershell -Command ^
+    "$path = '%FILEPATH%';" ^
+    "$url = '%URL%';" ^
+    "$file = Get-Content -Path $path -Encoding Byte; $boundary = [System.Guid]::NewGuid().ToString();" ^
+    "$contentType = 'multipart/form-data; boundary=' + $boundary;" ^
+    "$fileContent = if ($file[0] -eq 0xEF -and $file[1] -eq 0xBB -and $file[2] -eq 0xBF) {" ^
+    "    Write-Host 'The file is already UTF-8 encoded';" ^
+    "    [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))" ^
+    "} else {" ^
+    "    Write-Host 'Converting file encoding to UTF-8';" ^
+    "    [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Default))" ^
+    "};" ^
+    "$body = " ^
+    "    '--' + $boundary + [System.Environment]::NewLine +" ^
+    "    'Content-Disposition: form-data; name=\"file\"; filename=\"%FILENAME%\"' + [System.Environment]::NewLine +" ^
+    "    'Content-Type: application/octet-stream' + [System.Environment]::NewLine + [System.Environment]::NewLine +" ^
+    "    [Convert]::ToBase64String($fileContent) + [System.Environment]::NewLine +" ^
+    "    '--' + $boundary + '--' + [System.Environment]::NewLine;" ^
+    "try {" ^
+    "    $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType $contentType -ErrorAction Stop;" ^
+    "    Write-Host 'Upload successful! and will be closed after 3 seconds...';" ^
+    "    Start-Sleep -Seconds 3;" ^
+    "} catch {" ^
+    "    Write-Host 'Upload failed: ' + $_.Exception.Message;" ^
+    "    pause;" ^
+    "    exit 1;" ^
+    "}"
+
+:: Check upload result and pause if there was an error
+if %errorlevel% neq 0 (
+    echo Upload failed, please check the error message above.
+    pause
+    exit /b 1
+)
+
+endlocal
+`;
 }
 
 /**
