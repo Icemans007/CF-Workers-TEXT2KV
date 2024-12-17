@@ -396,7 +396,7 @@ function configHTML(domain, token) {
         <pre><code>update.bat ip.txt</code></pre>
         <div class="flex-row">
             <h2>Linux 脚本:</h2>
-            <button class="copy-button" onclick="navigator.clipboard.writeText(document.getElementsByClassName('language-bash').textContent).then(() => alert('脚本已复制到剪贴板'))">点击复制</button>
+            <button class="download-button" onclick="navigator.clipboard.writeText(document.getElementsByClassName('language-bash')[0].textContent).then(() => alert('脚本已复制到剪贴板'))">点击复制</button>
         </div>
         <pre><code class="language-bash">curl "https://${domain}/config/update.sh?token=${token}&t=$(date +%s%N)" -o update.sh && chmod +x update.sh</code></pre>
         <h2>在线文档查询:</h2>
