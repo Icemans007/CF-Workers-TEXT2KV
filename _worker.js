@@ -184,7 +184,7 @@ powershell -Command ^
     "    '--' + $boundary + '--' + [System.Environment]::NewLine;" ^
     "try {" ^
     "    $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType $contentType -ErrorAction Stop;" ^
-    "    Write-Host 'Upload is successful! and will be closed after 3 seconds ...';" ^
+    "    Write-Host 'Upload is successful and will be closed after 3 seconds ...';" ^
     "    Start-Sleep -Seconds 3;" ^
     "} catch {" ^
     "    Write-Host 'Upload failed: ' + $_.Exception.Message;" ^
@@ -200,7 +200,6 @@ if %errorlevel% neq 0 (
 )
 
 endlocal
-
 `;
 }
 
