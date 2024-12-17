@@ -26,7 +26,7 @@ export default {
                     return createResponse(generateShScript(url.hostname, token), 200, { "Content-Disposition": 'attachment; filename=update.sh', "Content-Type": "text/plain; charset=utf-8" });
                 default:
                     let fileName = url.pathname.substring(1).toLowerCase(); // 将文件名转换为小写
-                     
+
                     return await handleFileOperation(env.KV, fileName, url, request, token);
             }
         } catch (error) {
@@ -162,15 +162,20 @@ set URL=https://%DOMAIN%/%FILENAME%?token=%TOKEN%
 powershell -Command ^
     "$path = '%FILEPATH%';" ^
     "$url = '%URL%';" ^
-    "$file = Get-Content -Path $path -Encoding Byte; $boundary = [System.Guid]::NewGuid().ToString();" ^
+    "$fileContent = Get-Content -Path $path -Encoding Byte -Raw; $boundary = [System.Guid]::NewGuid().ToString();" ^
     "$contentType = 'multipart/form-data; boundary=' + $boundary;" ^
-    "$fileContent = if ($file[0] -eq 0xEF -and $file[1] -eq 0xBB -and $file[2] -eq 0xBF) {" ^
+    "$isUtf8 = $true;" ^
+    "try {" ^
+    "    [System.Text.Encoding]::UTF8.GetString($fileContent) | Out-Null;" ^
+    "} catch {" ^
+    "    $isUtf8 = $false;" ^
+    "}" ^
+    "if ($isUtf8) {" ^
     "    Write-Host 'The file is already UTF-8 encoded';" ^
-    "    [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8))" ^
     "} else {" ^
     "    Write-Host 'Converting file encoding to UTF-8';" ^
-    "    [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Default))" ^
-    "};" ^
+    "    $fileContent = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::Default));" ^
+    "}" ^
     "$body = " ^
     "    '--' + $boundary + [System.Environment]::NewLine +" ^
     "    'Content-Disposition: form-data; name=\"file\"; filename=\"%FILENAME%\"' + [System.Environment]::NewLine +" ^
@@ -179,7 +184,7 @@ powershell -Command ^
     "    '--' + $boundary + '--' + [System.Environment]::NewLine;" ^
     "try {" ^
     "    $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType $contentType -ErrorAction Stop;" ^
-    "    Write-Host 'Upload successful! and will be closed after 3 seconds...';" ^
+    "    Write-Host 'Upload is successful! and will be closed after 3 seconds ...';" ^
     "    Start-Sleep -Seconds 3;" ^
     "} catch {" ^
     "    Write-Host 'Upload failed: ' + $_.Exception.Message;" ^
@@ -195,6 +200,7 @@ if %errorlevel% neq 0 (
 )
 
 endlocal
+
 `;
 }
 
@@ -206,43 +212,69 @@ endlocal
 function generateShScript(domain, token) {
     return `#!/bin/bash
 
-export LANG=zh_CN.UTF-8
-# 设置域名和令牌
+# Set variables
 DOMAIN="${domain}"
 TOKEN="${token}"
+FILEPATH="$1"
+FILENAME=$(basename "$FILEPATH")
 
-if [ -n "$1" ]; then 
-  FILENAME="$1"
-else
-  echo "无文件名"
-  exit 1
-fi
-
-# 读取整个文件内容并转换为 Base64 编码
-BASE64_TEXT=$(base64 -w 0 "$FILENAME")
-
-# 构造 POST 数据（文件内容的 Base64 编码）
-POST_DATA="b64=$BASE64_TEXT"
-
-# 构造 GET 请求的 URL，包含文件名和令牌参数
-URL="https://$DOMAIN/$FILENAME?token=$TOKEN"
-
-# 使用 curl 发送 POST 请求，数据作为 POST 主体传递，并捕获错误输出
-RESPONSE=$(curl --fail -X POST "$URL" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "$POST_DATA" 2>&1)
-
-# 检查 curl 的返回码，如果失败，打印错误信息并不自动关闭
-if [[ $? -ne 0 ]]; then
-    echo "连接失败，请检查域名和 TOKEN 是否正确。"
-    echo "错误信息：$RESPONSE"
+# Check if the file exists
+if [ ! -f "$FILEPATH" ]; then
+    echo "File \"$FILEPATH\" does not exist."
+    read -p "Press any key to continue..."
     exit 1
 fi
 
-# 如果连接成功，显示成功消息并开始倒计时
-echo "数据已成功发送到服务器，倒数 5 秒后自动关闭窗口..."
-sleep 5
-exit 0
+# Construct the request URL
+URL="https://$DOMAIN/$FILENAME?token=$TOKEN"
+
+# Generate a UUID
+if command -v openssl &> /dev/null; then
+    BOUNDARY=$(openssl rand -hex 16)
+else
+    echo "openssl not found, please install openssl"
+    exit 1
+fi
+
+# Check if the file is UTF-8 encoded and convert if necessary
+if [[ $(file -bi "$FILEPATH" | sed -n 's/.*charset=//p') == "utf-8" ]]; then
+    echo "The file is already UTF-8 encoded"
+    FILE_CONTENT=$(< "$FILEPATH")
+else
+    echo "Converting file encoding to UTF-8"
+    FILE_CONTENT=$(iconv -f "$(file -bi "$FILEPATH" | sed -n 's/.*charset=//p')" -t UTF-8 "$FILEPATH")
+fi
+
+# Encode file content to base64
+ENCODED_CONTENT=$(echo -n "$FILE_CONTENT" | base64 -w 0)
+
+# Prepare the body directly in curl command
+RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "$URL" \
+    -H "Content-Type: multipart/form-data; boundary=$BOUNDARY" \
+    --data-binary @- << EOF
+--$BOUNDARY
+Content-Disposition: form-data; name="file"; filename="$FILENAME"
+Content-Type: application/octet-stream
+
+$ENCODED_CONTENT
+--$BOUNDARY--
+EOF
+)
+
+# Extract HTTP code and response body
+HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE" | awk -F: '{print $2}')
+RESPONSE_BODY=$(echo "$RESPONSE" | sed -e 's/HTTP_CODE:.*//g')
+
+if [ "$HTTP_CODE" -ne 200 ]; then
+    echo "Upload failed. HTTP Code: $HTTP_CODE"
+    echo "Response Body:"
+    echo "$RESPONSE_BODY"
+    read -p "Press any key to continue..."
+    exit 1
+else
+    echo "Upload is successful! and will be closed after 3 seconds ..."
+    sleep 3
+fi
 `;
 }
 
@@ -350,26 +382,28 @@ function configHTML(domain, token) {
     </script>
 </head>
 <body>
-        <h1>TEXT2KV 配置信息</h1>
+    <h1>TEXT2KV 配置信息</h1>
     <div class="container">
-
         <p>
             <strong>服务域名:</strong> ${domain}<br>
             <strong>TOKEN:</strong> ${token}<br>
         </p>
-        <p class="tips"><strong>注意!</strong> 请保管好自己的TOKEN，泄漏了域名和TOKEN他人可以直接获取你的数据。</p>
-    <div class="flex-row">
-    <h2>Windows 脚本:</h2>
-    <button class="download-button" onclick="window.open('https://${domain}/config/update.bat?token=${token}&t=' + Date.now(), '_blank')">点击下载</button>
-    </div>
+        <p class="tips"><strong>注意!</strong> 请保管自己的TOKEN，泄漏了域名和TOKEN，他人可以直接获取您的数据。</p>
+        <div class="flex-row">
+            <h2>Windows 脚本:</h2>
+            <button class="download-button" onclick="window.open('https://${domain}/config/update.bat?token=${token}&t=' + Date.now(), '_blank')">点击下载</button>
+        </div>
         <pre><code>update.bat ip.txt</code></pre>
-        <h2>Linux 脚本:</h2>
+        <div class="flex-row">
+            <h2>Linux 脚本:</h2>
+            <button class="copy-button" onclick="navigator.clipboard.writeText(document.getElementsByClassName('language-bash').textContent).then(() => alert('脚本已复制到剪贴板'))">点击复制</button>
+        </div>
         <pre><code class="language-bash">curl "https://${domain}/config/update.sh?token=${token}&t=$(date +%s%N)" -o update.sh && chmod +x update.sh</code></pre>
         <h2>在线文档查询:</h2>
         <div class="input-button-container">
-        <input type="text" id="keyword" placeholder="请输入要查询的文档">
-        <button onclick="viewDocument()">查看文档内容</button>
-        <button onclick="copyDocumentURL()">复制文档地址</button>
+            <input type="text" id="keyword" placeholder="请输入要查询的文档">
+            <button onclick="viewDocument()">查看文档内容</button>
+            <button onclick="copyDocumentURL()">复制文档地址</button>
         </div>
     </div>
     <script>
