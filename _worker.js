@@ -69,8 +69,7 @@ async function handleFileOperation(KV, fileName, url, request, token) {
             if (file) {
                 // 读取文件内容
                 const arrayBuffer = await file.arrayBuffer();
-                // content = new TextDecoder('utf-8').decode(arrayBuffer);
-                content = base64Decode(replaceSpacesWithPlus(arrayBuffer));
+                content = base64Decode(replaceSpacesWithPlus(new TextDecoder().decode(arrayBuffer)));
             } else {
                 throw new Error('File not found in the request');
             }
