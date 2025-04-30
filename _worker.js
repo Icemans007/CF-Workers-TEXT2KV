@@ -81,6 +81,11 @@ async function handleFileOperation(KV, fileName, url, request, token) {
     else {
         content = text ?? base64Decode(replaceSpacesWithPlus(b64));
     }
+    // 如果第一行是空行，设置为是追加内容
+    if (!Boolean(content.split('\n')[0].trim())) {
+        const oldContent = await KV.get(fileName, { cacheTtl: 60 });
+        content = oldContent + content;
+    }
 
     await KV.put(fileName, content);
     const verifiedContent = await KV.get(fileName, { cacheTtl: 60 });
